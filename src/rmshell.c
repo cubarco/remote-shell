@@ -16,13 +16,27 @@
 #define MAXBUF 1024
 
 void bash_server_func(int);
-void pty_func(int);
+void pty_func(int, int);
 
 int main(int argc, char **argv)
 {
         int s_sockfd, c_sockfd;
         struct sockaddr_in s_addr, c_addr;
         socklen_t len = sizeof(struct sockaddr);
+        
+        /**
+         *
+         * SIGINT signal Call-back
+         */
+        void before_kill()
+        {
+                printf("\nServer going to shutdown\n");
+                shutdown(s_sockfd, 2);
+                close(s_sockfd);
+                close(c_sockfd);
+                exit(EXIT_SUCCESS);
+        }
+        signal(SIGINT, before_kill);
 
         if((s_sockfd=socket(AF_INET, SOCK_STREAM, 0)) == -1){
                 printf("Can not open socket.\n");
@@ -56,7 +70,7 @@ int main(int argc, char **argv)
         while(1){
                 // ACCEPT
                 if((c_sockfd = accept(s_sockfd, (struct sockaddr*)&c_addr, &len)) == -1){
-                        printf("Accept error.\n");
+                        printf("Accept error or server shutdown.\n");
                         exit(EXIT_FAILURE);
                 }
                 // Double fork to get pty and shell
@@ -70,7 +84,7 @@ int main(int argc, char **argv)
                         }else if(cli_pid == 0){
                                 // TODO Run server side 
                                 // bash_server_func(c_sockfd);
-                                pty_func(c_sockfd);
+                                pty_func(c_sockfd, s_sockfd);
                         }
                         exit(EXIT_SUCCESS);
                 }else{
@@ -79,8 +93,7 @@ int main(int argc, char **argv)
                 }
         }
 
-        close(s_sockfd);
-        close(c_sockfd);
+
         return EXIT_SUCCESS;
 }
 
@@ -88,12 +101,24 @@ int main(int argc, char **argv)
  *
  * Give a pseudo-terminal to bash.
  */
-void pty_func(int c_sockfd)
+void pty_func(int c_sockfd, int s_sockfd)
 {
         int fdm, fds, rc;
         char buf[MAXBUF+1];
         int len;
         
+        /**
+         *
+         * SIGCHLD signal Call-back
+         */
+        void shell_shutdown()
+        {
+                printf("Shell shutdown.\n");
+                shutdown(c_sockfd, 2);
+                close(s_sockfd);
+                exit(EXIT_SUCCESS);
+        }        
+
         fdm = posix_openpt(O_RDWR); 
         if (fdm < 0){
                 fprintf(stderr, "Error %d on posix_openpt()\n", errno); 
@@ -109,7 +134,7 @@ void pty_func(int c_sockfd)
                 fprintf(stderr, "Error %d on unlockpt()\n", errno); 
                 exit(EXIT_FAILURE); 
         } 
-
+        
         // Open the slave PTY
         fds = open(ptsname(fdm), O_RDWR);
         pid_t pid_cli;
@@ -129,6 +154,7 @@ void pty_func(int c_sockfd)
                 tcsetattr(0, TCSANOW, &options);
                 execl("/bin/bash", "bash", NULL);
         }else{
+                signal(SIGCHLD, shell_shutdown);
                 close(fds);
                 pid_t pid_serv;
                 if(-1 == (pid_serv=fork())){
@@ -142,8 +168,6 @@ void pty_func(int c_sockfd)
                                 if(len>0){
                                         send(c_sockfd, buf, strlen(buf), 0);
                                 }else{
-                                        perror("Master side read pty error.\n");
-                                        kill(getppid(), SIGINT);
                                         break;
                                 }
                         }
@@ -171,6 +195,10 @@ void pty_func(int c_sockfd)
                         }
                 }
         }
+
+        printf("Going to close connetion.\n");
+        shutdown(c_sockfd, 2);
+        close(s_sockfd);
 }
 
 /**
