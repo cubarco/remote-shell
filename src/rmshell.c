@@ -13,7 +13,8 @@
 #include <netinet/in.h>
 #include <signal.h>
 
-#define MAXBUF 1024
+#define PORT    55555
+#define MAXBUF  1024
 
 void bash_server_func(int);
 void pty_func(int, int);
@@ -46,9 +47,14 @@ int main(int argc, char **argv)
         }
         
         s_addr.sin_family = AF_INET;
-        s_addr.sin_port = htons(55555);
+        s_addr.sin_port = htons(PORT);
         s_addr.sin_addr.s_addr = INADDR_ANY;
         
+        // set SO_REUSEADDR option to avoid TIME_WAIT state
+        int reuse_addr=1;
+        setsockopt(s_sockfd, SOL_SOCKET, SO_REUSEADDR, 
+                        (const char*)&reuse_addr, sizeof(reuse_addr));
+
         if(bind(s_sockfd, (struct sockaddr*)&s_addr, len) == -1){
                 printf("Can not bind.\n");
                 exit(EXIT_SUCCESS);
@@ -93,7 +99,6 @@ int main(int argc, char **argv)
                 }
         }
 
-
         return EXIT_SUCCESS;
 }
 
@@ -134,9 +139,9 @@ void pty_func(int c_sockfd, int s_sockfd)
                 fprintf(stderr, "Error %d on unlockpt()\n", errno); 
                 exit(EXIT_FAILURE); 
         } 
-        
         // Open the slave PTY
         fds = open(ptsname(fdm), O_RDWR);
+
         pid_t pid_cli;
         struct termios options;
         if(-1 == (pid_cli = fork())){
