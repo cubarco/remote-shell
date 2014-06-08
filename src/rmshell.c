@@ -149,9 +149,12 @@ void pty_func(int c_sockfd, int s_sockfd)
                 dup2(fds, fileno(stderr));
                 close(fds);
                 setsid();
-                ioctl(0, TIOCSCTTY, 1);
+                ioctl(STDIN_FILENO, TIOCSCTTY, 1);
+                tcgetattr(STDIN_FILENO, &options);
+                options.c_lflag &= ~ECHO;       // do not send back user input
                 options.c_lflag |= (ICANON | ECHOE);
-                tcsetattr(0, TCSANOW, &options);
+                options.c_iflag |= (IGNCR);     // set iflag to ignore CR from input
+                tcsetattr(STDIN_FILENO, TCSANOW, &options);
                 execl("/bin/bash", "bash", NULL);
         }else{
                 signal(SIGCHLD, shell_shutdown);
@@ -177,10 +180,6 @@ void pty_func(int c_sockfd, int s_sockfd)
                                 memset(buf, '\0', MAXBUF+1);
                                 len = recv(c_sockfd, buf, MAXBUF, 0);
                                 if(len > 0){
-                                        if(buf[strlen(buf)-2] == '\r'){
-                                                buf[strlen(buf)-2] = '\n';
-                                                buf[strlen(buf)-1] = '\0';
-                                        }
                                         printf("PID: %d, RUNNING: %s", pid_cli, buf);
                                         write(fdm, buf, strlen(buf));
                                 }else if(len==0){
