@@ -12,12 +12,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <arpa/inet.h>
+#define DEBUG
+#include "pw.c"
 
 #define PORT    55555
 #define MAXBUF  1024
 
 void bash_server_func(int);
-void pty_func(int, int);
+void pty_func(int);
 
 int main(int argc, char **argv)
 {
@@ -31,19 +34,21 @@ int main(int argc, char **argv)
          */
         void before_kill()
         {
-                printf("\nServer going to shutdown\n");
+                putchar('\n');
+                wprintf("Server going to shutdown\n");
                 shutdown(s_sockfd, 2);
+                shutdown(c_sockfd, 2);
                 close(s_sockfd);
                 close(c_sockfd);
                 exit(EXIT_SUCCESS);
         }
         signal(SIGINT, before_kill);
-
+        
         if((s_sockfd=socket(AF_INET, SOCK_STREAM, 0)) == -1){
-                printf("Can not open socket.\n");
+                eprintf("Can not open socket.\n");
                 exit(EXIT_FAILURE);
         }else{
-                printf("Socket opened.\n");
+                dprintf("Socket opened.\n");
         }
         
         s_addr.sin_family = AF_INET;
@@ -56,46 +61,48 @@ int main(int argc, char **argv)
                         (const char*)&reuse_addr, sizeof(reuse_addr));
 
         if(bind(s_sockfd, (struct sockaddr*)&s_addr, len) == -1){
-                printf("Can not bind.\n");
-                exit(EXIT_SUCCESS);
+                eprintf("Can not bind.\n");
+                exit(EXIT_FAILURE);
         }else{
-                printf("Socket binded.\n");
+                dprintf("Socket binded.\n");
         }
 
         if(listen(s_sockfd, 5) == -1){
-                perror("Socket listen error.\n");
+                eprintf("Socket listen error.\n");
                 exit(EXIT_FAILURE);
         }else{
-                printf("Socket listened.\n");
+                dprintf("Socket listened.\n");
         }
         
-        printf("Waiting for connection.\n");
+        iprintf("Waiting for connection.\n");
         
         pid_t cli_pid_tmp;
         int i;
         while(1){
                 // ACCEPT
                 if((c_sockfd = accept(s_sockfd, (struct sockaddr*)&c_addr, &len)) == -1){
-                        printf("Accept error or server shutdown.\n");
+                        eprintf("Accept error or server shutdown.\n");
                         exit(EXIT_FAILURE);
                 }
                 // Double fork to get pty and shell
                 if((cli_pid_tmp=fork())==-1){
-                        perror("cli fork error\n");
+                        eprintf("cli fork error\n");
                         break;
                 }else if(cli_pid_tmp==0){
+                        close(s_sockfd);
+                        iprintf("Got connection from %s:%d\n", inet_ntoa(c_addr.sin_addr), ntohs(c_addr.sin_port));
                         pid_t cli_pid;
                         if((cli_pid=fork()) == -1){
-                                perror("Double fork error\n");
+                                eprintf("Double fork error\n");
                         }else if(cli_pid == 0){
                                 // TODO Run server side 
                                 // bash_server_func(c_sockfd);
-                                pty_func(c_sockfd, s_sockfd);
+                                pty_func(c_sockfd);
                         }
                         exit(EXIT_SUCCESS);
                 }else{
                         wait(NULL);
-                        printf("Double fork trick done\n");
+                        dprintf("Double fork trick done\n");
                 }
         }
 
@@ -106,7 +113,7 @@ int main(int argc, char **argv)
  *
  * Give a pseudo-terminal to bash.
  */
-void pty_func(int c_sockfd, int s_sockfd)
+void pty_func(int c_sockfd)
 {
         int fdm, fds, rc;
         char buf[MAXBUF+1];
@@ -118,25 +125,24 @@ void pty_func(int c_sockfd, int s_sockfd)
          */
         void shell_shutdown()
         {
-                printf("Shell shutdown.\n");
+                wprintf("Shell shutdown.\n");
                 shutdown(c_sockfd, 2);
-                close(s_sockfd);
                 exit(EXIT_SUCCESS);
         }        
 
         fdm = posix_openpt(O_RDWR); 
         if (fdm < 0){
-                fprintf(stderr, "Error %d on posix_openpt()\n", errno); 
+                eprintf("Error %d on posix_openpt()\n", errno); 
                 exit(EXIT_FAILURE); 
         } 
         rc = grantpt(fdm); 
         if (rc != 0){
-                fprintf(stderr, "Error %d on grantpt()\n", errno); 
+                eprintf("Error %d on grantpt()\n", errno); 
                 exit(EXIT_FAILURE); 
         } 
         rc = unlockpt(fdm); 
         if (rc != 0){
-                fprintf(stderr, "Error %d on unlockpt()\n", errno); 
+                eprintf("Error %d on unlockpt()\n", errno); 
                 exit(EXIT_FAILURE); 
         } 
         // Open the slave PTY
@@ -145,7 +151,7 @@ void pty_func(int c_sockfd, int s_sockfd)
         pid_t pid_cli;
         struct termios options;
         if(-1 == (pid_cli = fork())){
-                perror("Fork error\n");
+                eprintf("Fork error\n");
                 exit(EXIT_FAILURE);
         }else if(0 == pid_cli){
                 close(fdm);
@@ -166,7 +172,7 @@ void pty_func(int c_sockfd, int s_sockfd)
                 close(fds);
                 pid_t pid_serv;
                 if(-1 == (pid_serv=fork())){
-                        perror("Fork error\n");
+                        eprintf("Fork error\n");
                         exit(EXIT_FAILURE);
                 }else if(0 == pid_serv){
                         // This fork receives and send fds's output
@@ -185,10 +191,10 @@ void pty_func(int c_sockfd, int s_sockfd)
                                 memset(buf, '\0', MAXBUF+1);
                                 len = recv(c_sockfd, buf, MAXBUF, 0);
                                 if(len > 0){
-                                        printf("PID: %d, RUNNING: %s", pid_cli, buf);
+                                        iprintf("PID: %d, RUNNING: %s", pid_cli, buf);
                                         write(fdm, buf, strlen(buf));
                                 }else if(len==0){
-                                        printf("Client quit.\n");
+                                        wprintf("Client quit.\n");
                                         kill(pid_cli, SIGINT);
                                         break;
                                 }else{
@@ -200,9 +206,8 @@ void pty_func(int c_sockfd, int s_sockfd)
                 }
         }
 
-        printf("Going to close connetion.\n");
+        wprintf("Going to close connetion.\n");
         shutdown(c_sockfd, 2);
-        close(s_sockfd);
 }
 
 /**
