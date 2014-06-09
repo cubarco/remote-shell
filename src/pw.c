@@ -53,6 +53,6 @@
  */
 #define eprintf(format, args...) \
 { \
-        fprintf(stderr, COL_BRED "[ERROR] " COL); \
+        fprintf(stderr, COL_BPURPLE "[ERROR] " COL); \
         fprintf(stderr, format, ## args); \
 }
