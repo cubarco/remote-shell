@@ -13,13 +13,14 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <arpa/inet.h>
+#include <sys/wait.h>
 #define DEBUG
 #include "pw.c"
 
 #define PORT    55555
 #define MAXBUF  1024
+#define MAX(a,b) (((a)>(b))?(a):(b))
 
-void bash_server_func(int);
 void pty_func(int);
 
 int main(int argc, char **argv)
@@ -29,13 +30,11 @@ int main(int argc, char **argv)
         socklen_t len = sizeof(struct sockaddr);
         
         /**
-         *
          * SIGINT signal Call-back
          */
         void before_kill()
         {
                 putchar('\n');
-                wprintf("Server going to shutdown\n");
                 shutdown(s_sockfd, 2);
                 shutdown(c_sockfd, 2);
                 close(s_sockfd);
@@ -53,7 +52,7 @@ int main(int argc, char **argv)
         
         s_addr.sin_family = AF_INET;
         s_addr.sin_port = htons(PORT);
-        s_addr.sin_addr.s_addr = INADDR_ANY;
+        s_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         
         // set SO_REUSEADDR option to avoid TIME_WAIT state
         int reuse_addr=1;
@@ -80,7 +79,8 @@ int main(int argc, char **argv)
         int i;
         while(1){
                 // ACCEPT
-                if((c_sockfd = accept(s_sockfd, (struct sockaddr*)&c_addr, &len)) == -1){
+                c_sockfd = accept(s_sockfd, (struct sockaddr*)&c_addr, &len);
+                if(-1 == c_sockfd){
                         eprintf("Accept error or server shutdown.\n");
                         exit(EXIT_FAILURE);
                 }
@@ -95,8 +95,6 @@ int main(int argc, char **argv)
                         if((cli_pid=fork()) == -1){
                                 eprintf("Double fork error\n");
                         }else if(cli_pid == 0){
-                                // TODO Run server side 
-                                // bash_server_func(c_sockfd);
                                 pty_func(c_sockfd);
                         }
                         exit(EXIT_SUCCESS);
@@ -109,8 +107,46 @@ int main(int argc, char **argv)
         return EXIT_SUCCESS;
 }
 
+void run_server(int fdm, int c_sockfd, char *buf, socklen_t len, pid_t pid_cli)
+{
+	int maxfdp1;
+	fd_set rset;
+
+	FD_ZERO(&rset);
+	for (;;) {
+		FD_SET(fdm, &rset);
+		FD_SET(c_sockfd, &rset);
+		maxfdp1 = MAX(fdm, c_sockfd) + 1;
+		select(maxfdp1, &rset, NULL, NULL, NULL);
+
+		memset(buf, 0, MAXBUF);
+		if (FD_ISSET(fdm, &rset)) {
+			len = read(fdm, buf, MAXBUF);
+			if (0 == len)
+				break ;
+			send(c_sockfd, buf, strlen(buf), 0);
+		}
+
+		if (FD_ISSET(c_sockfd, &rset)) {
+			len = recv(c_sockfd, buf, MAXBUF, 0);
+	                if(len > 0){
+                                iprintf("PID: %d, RUNNING: %s", pid_cli, buf);
+                                write(fdm, buf, strlen(buf));
+                        }else if(len==0){
+                                wprintf("Client quit.\n");
+                                kill(pid_cli, SIGINT);
+                                break ;
+                        }else{
+                                eprintf("recv error.\n");
+                                kill(pid_cli, SIGINT);
+                                break ;
+                        }
+ 		}
+	}
+
+}
+
 /**
- *
  * Give a pseudo-terminal to bash.
  */
 void pty_func(int c_sockfd)
@@ -120,7 +156,6 @@ void pty_func(int c_sockfd)
         int len;
         
         /**
-         *
          * SIGCHLD signal Call-back
          */
         void shell_shutdown()
@@ -170,89 +205,8 @@ void pty_func(int c_sockfd)
         }else{
                 signal(SIGCHLD, shell_shutdown);
                 close(fds);
-                pid_t pid_serv;
-                if(-1 == (pid_serv=fork())){
-                        eprintf("Fork error\n");
-                        exit(EXIT_FAILURE);
-                }else if(0 == pid_serv){
-                        // This fork receives and send fds's output
-                        while(1){
-                                memset(buf, '\0', MAXBUF+1);
-                                len = read(fdm, buf, MAXBUF);
-                                if(len>0){
-                                        send(c_sockfd, buf, strlen(buf), 0);
-                                }else{
-                                        break;
-                                }
-                        }
-                }else{
-                        // This fork receives and send client's input
-                        while(1){
-                                memset(buf, '\0', MAXBUF+1);
-                                len = recv(c_sockfd, buf, MAXBUF, 0);
-                                if(len > 0){
-                                        iprintf("PID: %d, RUNNING: %s", pid_cli, buf);
-                                        write(fdm, buf, strlen(buf));
-                                }else if(len==0){
-                                        wprintf("Client quit.\n");
-                                        kill(pid_cli, SIGINT);
-                                        break;
-                                }else{
-                                        perror("recv error.\n");
-                                        kill(pid_cli, SIGINT);
-                                        break;
-                                }
-                        }
-                }
+		run_server(fdm, c_sockfd, buf, len, pid_cli);
         }
-
-        wprintf("Going to close connetion.\n");
+        dprintf("Going to close connetion.\n");
         shutdown(c_sockfd, 2);
-}
-
-/**
- *
- * @deprecated
- * Force bash to work interactively.
- */
-void bash_server_func(int c_sockfd)
-{
-        char buf[MAXBUF+1];
-        pid_t pid;
-        int len;
-        int mypipe[2];
-        pipe(mypipe);
-        if(-1 == (pid = fork())){
-                perror("Fork error\n");
-                exit(EXIT_FAILURE);
-        }else if(0==pid){
-                close(mypipe[1]);
-                printf("bash PID: %d\n", getpid());
-                dup2(c_sockfd, STDOUT_FILENO);
-                dup2(c_sockfd, STDERR_FILENO);
-                dup2(mypipe[0], STDIN_FILENO);
-                execl("/bin/bash", "bash", "-i", NULL);
-        }else{
-                printf("bash PPID: %d\n", getpid());
-                close(mypipe[0]);
-                while(1){
-                        memset(buf, '\0', MAXBUF+1);
-                        len = recv(c_sockfd, buf, MAXBUF, 0);
-                        if(len>0){
-                                if(buf[strlen(buf)-2] == '\r'){
-                                        buf[strlen(buf)-2]='\n';
-                                        buf[strlen(buf)-1]='\0';
-                                }
-                                printf("RUNNING: %s", buf);
-                                write(mypipe[1], buf, strlen(buf));
-                        }else if(len<0){
-                                perror("Receive error.\n");
-                                break;
-                        }else{
-                                printf("Client quit.\n");
-                                kill(pid, SIGINT);
-                                break;
-                        }
-                }
-        }
 }
